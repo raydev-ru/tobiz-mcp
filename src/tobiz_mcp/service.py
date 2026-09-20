@@ -17,6 +17,7 @@ from .domain.draft import Draft, DraftStore
 from .render.bridge import RenderBridge
 from .session import SessionStore
 from .tobiz import endpoints as ep
+from .tobiz import pages as page_forms
 from .tobiz import payload as payload_builder
 from .tobiz import upload as upload_module
 from .tobiz.catalog import BlockType, Catalog
@@ -203,6 +204,235 @@ class Service:
             "url_325": f"/img/325x0/{result.get('image')}",
             "raw": result if result.get("msg") else None,
         }
+
+    # --- параметры страницы: название, slug, SEO, доступ, og:image ---
+
+    #: имя параметра инструмента -> (имя поля формы edit_page, тип)
+    PAGE_EDIT_FIELDS = {
+        "title": ("page_title", "text"),
+        "dir": ("page_dir", "text"),
+        "seo_title": ("page_seo_title", "text"),
+        "seo_keywords": ("page_seo_keywords", "text"),
+        "seo_description": ("page_seo_description", "text"),
+        "og_image": ("page_image", "radio"),
+        "valid_login": ("page_valid_login", "text"),
+        "valid_password": ("page_valid_password", "text"),
+        "personal_seo_configs": ("page_user_personal_seo_configs", "checkbox"),
+        "access_control": ("page_access_control", "checkbox"),
+    }
+
+    async def page_form(self, project_id: str, page_id: str) -> page_forms.PageForm:
+        """Текущие параметры страницы: форма action=edit_page_form."""
+        await self.resolve_page(project_id, page_id)
+        envelope = await self.client.panel_ajax(
+            ep.PANEL_AJAX_ACTION_EDIT_PAGE_FORM, page_id=page_id)
+        if not envelope.ok:
+            raise errors.TobizError(
+                errors.UPSTREAM_UNAVAILABLE,
+                f"Конструктор не отдал форму страницы: {envelope.message or envelope.status}",
+                "Проверьте page_id и сессию (tobiz_session_status)",
+            )
+        return page_forms.parse_edit_form(str(envelope.payload.get("html") or ""))
+
+    async def update_page(self, project_id: str, page_id: str, **fields: Any) -> dict[str, Any]:
+        """Правка параметров страницы через action=edit_page.
+
+        Панель принимает полный набор полей формы (как это делает редактор), поэтому сначала
+        читаем форму и отправляем её целиком с замененными значениями: иначе не переданные
+        поля могут обнулиться. В отличие от блоков, изменения уходят на сервер сразу.
+        """
+        if self.config.read_only:
+            raise errors.read_only()
+        project_id, _ = await self.resolve_page(project_id, page_id)
+
+        unknown = [name for name, value in fields.items()
+                   if value is not None and name not in self.PAGE_EDIT_FIELDS]
+        if unknown:
+            raise errors.TobizError(
+                errors.BAD_ARGUMENT,
+                f"Неизвестные параметры страницы: {', '.join(sorted(unknown))}",
+                f"Разрешены: {', '.join(sorted(self.PAGE_EDIT_FIELDS))}",
+            )
+
+        form = await self.page_form(project_id, page_id)
+        params = dict(form.fields)
+        applied: dict[str, Any] = {}
+        for name, value in fields.items():
+            if value is None:
+                continue
+            payload_key, kind = self.PAGE_EDIT_FIELDS[name]
+            if kind == "checkbox":
+                if value:
+                    params[payload_key] = "1"
+                else:
+                    params.pop(payload_key, None)
+                applied[payload_key] = bool(value)
+                continue
+            params[payload_key] = "" if value == "" else str(value)
+            applied[payload_key] = params[payload_key]
+        if not applied:
+            raise errors.TobizError(
+                errors.BAD_ARGUMENT,
+                "Не передано ни одного параметра страницы",
+                "Например: seo_title, seo_description, seo_keywords, og_image",
+            )
+        params["page_id"] = str(page_id)
+        params.pop("action", None)
+
+        envelope = await self.client.panel_ajax(
+            ep.PANEL_AJAX_ACTION_EDIT_PAGE, **params)
+        if not envelope.ok:
+            raise errors.TobizError(
+                errors.SAVE_FAILED,
+                f"Конструктор не изменил параметры страницы: {envelope.message or envelope.status}",
+                "Проверьте значения: slug может быть занят, картинка — не из списка",
+                raw={"status": envelope.status, "body": envelope.raw_text[:500]},
+            )
+
+        # читаем форму заново: подтверждаем, что применилось именно то, что просили
+        after = await self.page_form(project_id, page_id)
+        # SaveBlocks тоже несёт SEO из page_meta: обновляем кеш черновика значениями из формы,
+        # иначе следующее сохранение блоков вернёт старые SEO (window.tobiz может отставать)
+        draft = self.drafts.get(project_id, page_id)
+        if draft is not None:
+            applied_form = after.to_dict()
+            draft.page_meta.update({
+                "page_title": applied_form.get("page_title", ""),
+                "page_dir": applied_form.get("page_dir", ""),
+                "seo_title": applied_form.get("page_seo_title", ""),
+                "seo_keywords": applied_form.get("page_seo_keywords", ""),
+                "seo_description": applied_form.get("page_seo_description", ""),
+                "OG_image": applied_form.get("page_image", ""),
+                "personal_seo_configs": "1" if applied_form.get("page_user_personal_seo_configs")
+                else "0",
+            })
+        self._projects = None  # кеш списка страниц устарел: могли поменяться название и адрес
+
+        result = after.to_dict()
+        mismatched = {
+            key: value for key, value in applied.items()
+            if str(result.get(key, "")) != str(value)
+            and not (isinstance(value, bool) and bool(result.get(key)) is value)
+        }
+        await self.audit("tobiz_update_page", project_id, page_id=page_id,
+                         extra={"fields": sorted(applied), "mismatched": sorted(mismatched)})
+        return {
+            "page_id": page_id,
+            "applied": applied,
+            "page": result,
+            "mismatched": mismatched,
+            "note": "Изменения уже на сайте: edit_page пишет сразу, без tobiz_save_page",
+        }
+
+    def page_info(self, draft: Draft) -> dict[str, Any]:
+        """Параметры страницы из кеша редактора (window.tobiz) — может отставать."""
+        meta = draft.page_meta
+        return {
+            "page_title": meta.get("page_title") or "",
+            "page_dir": meta.get("page_dir") or "",
+            "seo_title": meta.get("seo_title") or "",
+            "seo_keywords": meta.get("seo_keywords") or "",
+            "seo_description": meta.get("seo_description") or "",
+            "personal_seo_configs": str(meta.get("personal_seo_configs") or "0"),
+            "hint": "точные текущие значения — tobiz_page_info",
+        }
+
+    # --- копирование и удаление страницы ---
+
+    async def copy_page_form(self, project_id: str, page_id: str) -> page_forms.PageForm:
+        """Форма копирования: название копии и список доступных проектов."""
+        await self.resolve_page(project_id, page_id)
+        envelope = await self.client.panel_ajax(
+            ep.PANEL_AJAX_ACTION_COPY_PAGE_FORM, page_id=page_id)
+        if not envelope.ok:
+            raise errors.TobizError(
+                errors.UPSTREAM_UNAVAILABLE,
+                f"Конструктор не отдал форму копирования: {envelope.message or envelope.status}",
+                "Проверьте page_id и сессию (tobiz_session_status)",
+            )
+        return page_forms.parse_edit_form(str(envelope.payload.get("html") or ""))
+
+    async def copy_page(self, project_id: str, page_id: str, title: str | None = None,
+                        target_project: str | None = None, apply: bool = True) -> dict[str, Any]:
+        """Копирует страницу в проект (по умолчанию — в текущий).
+
+        apply=False — только показать, что будет отправлено, ничего не создавая.
+        """
+        if self.config.read_only:
+            raise errors.read_only()
+        project_id, page = await self.resolve_page(project_id, page_id)
+        form = await self.copy_page_form(project_id, page_id)
+        targets = form.selects.get("new_project") or []
+        new_title = title or form.text.get("page_title") or f"Копия {page.title}"
+        target = str(target_project or "").strip()
+        if not target:
+            selected = [v for v in targets if v.get("selected") == "1"]
+            target = (selected[0]["value"] if selected else (targets[0]["value"] if targets else project_id))
+        if targets and target not in [v["value"] for v in targets]:
+            raise errors.TobizError(
+                errors.BAD_ARGUMENT,
+                f"Проект {target} недоступен для копирования",
+                "Доступные проекты: " + ", ".join(f"{v['value']} «{v['title']}»" for v in targets),
+            )
+        plan = {"page_id": page_id, "page_title": new_title, "new_project": target}
+        if not apply:
+            return {"dry_run": True, "will_send": plan, "targets": targets}
+
+        projects_before = await self.projects(refresh=True)
+        before = {p.page_id for project in projects_before
+                  if project.project_id == str(target) for p in project.pages}
+        envelope = await self.client.panel_ajax(ep.PANEL_AJAX_ACTION_COPY_PAGE, **plan)
+        if not envelope.ok:
+            raise errors.TobizError(
+                errors.SAVE_FAILED,
+                f"Конструктор не скопировал страницу: {envelope.message or envelope.status}",
+                "Проверьте название и целевой проект",
+                raw={"status": envelope.status, "body": envelope.raw_text[:500]},
+            )
+        self._projects = None
+        projects = await self.projects(refresh=True)
+        created: list[dict[str, Any]] = []
+        for project in projects:
+            if project.project_id != str(target):
+                continue
+            for page_item in project.pages:
+                if page_item.page_id not in before:
+                    created.append(page_item.to_dict(self.config.lp_template, project.project_id))
+        await self.audit("tobiz_copy_page", project_id, page_id=page_id,
+                         extra={"title": new_title, "new_project": target})
+        return {"copied_from": page_id, "title": new_title, "new_project": target,
+                "created": created, "response": envelope.status,
+                "note": "Новая страница пустая по контенту? Нет — копия содержит блоки источника; "
+                        "проверьте её в tobiz_list_pages"}
+
+    async def delete_page(self, project_id: str, page_id: str, confirm: bool = False) -> dict[str, Any]:
+        """Удаляет страницу. Требует confirm=True — операция необратимая."""
+        if self.config.read_only:
+            raise errors.read_only()
+        project_id, page = await self.resolve_page(project_id, page_id)
+        if not confirm:
+            raise errors.TobizError(
+                errors.BAD_ARGUMENT,
+                f"Удаление страницы {page_id} «{page.title}» не подтверждено",
+                "Повторите вызов с confirm=true, если страницу действительно надо удалить",
+            )
+        envelope = await self.client.panel_ajax(
+            ep.PANEL_AJAX_ACTION_DELETE_PAGE, page_id=page_id)
+        if not envelope.ok:
+            raise errors.TobizError(
+                errors.SAVE_FAILED,
+                f"Конструктор не удалил страницу: {envelope.message or envelope.status}",
+                "Возможно, страница уже удалена — проверьте tobiz_list_pages",
+                raw={"status": envelope.status, "body": envelope.raw_text[:500]},
+            )
+        self.drafts.drop(project_id, page_id)
+        self._projects = None
+        remaining = [p.page_id for project in await self.projects(refresh=True)
+                     if project.project_id == project_id for p in project.pages]
+        await self.audit("tobiz_delete_page", project_id, page_id=page_id,
+                         extra={"title": page.title})
+        return {"deleted": page_id, "title": page.title, "remaining_pages": remaining,
+                "response": envelope.status}
 
     # --- сохранение ---
 

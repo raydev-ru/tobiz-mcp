@@ -31,6 +31,7 @@ READ_TOOLS = {
     "tobiz_login", "tobiz_session_status", "tobiz_health", "tobiz_list_projects",
     "tobiz_list_pages", "tobiz_page_summary", "tobiz_list_blocks", "tobiz_get_block",
     "tobiz_search_blocks", "tobiz_describe_block", "tobiz_verify_page", "tobiz_refresh_assets",
+    "tobiz_page_info",
 }
 
 
@@ -199,7 +200,7 @@ def register(mcp: Any, service: Service) -> list[str]:
                 "changed": bool(block.changed_paths) or block.origin == "created",
             })
         return {"project_id": project_id, "page_id": page_id, "title": page.title,
-                "url": page.url, "blocks": summary}
+                "url": page.url, "seo": service.page_info(draft), "blocks": summary}
 
     @tool("tobiz_search_blocks",
           "Поиск по библиотеке блоков: русский текст ищется в названии и описании типа, "
@@ -357,6 +358,54 @@ def register(mcp: Any, service: Service) -> list[str]:
         draft = await service.draft(project_id, page_id)
         order = draft.move_block(str(block_id), position, after_block_id or None)
         return {"order": order, "change_hash": draft.change_hash()}
+
+    @tool("tobiz_page_info",
+          "Параметры страницы как в панели: название, URL (slug), SEO-заголовок, описание, "
+          "ключевые слова, картинка для соцсетей, доступ по паролю. Читается из формы панели.")
+    async def tobiz_page_info(project_id: Id | None = None, page_id: Id = "") -> dict[str, Any]:
+        project_id, page = await service.resolve_page(project_id, page_id)
+        form = await service.page_form(project_id, page_id)
+        return {"project_id": project_id, "page_id": page_id, "title": page.title,
+                "url": page.url, "visible": page.visible, "page": form.to_dict()}
+
+    @tool("tobiz_update_page",
+          "Изменить параметры страницы: title (название), dir (URL/slug), seo_title, "
+          "seo_description, seo_keywords, og_image (имя загруженного файла), valid_login, "
+          "valid_password, personal_seo_configs, access_control. Пишет СРАЗУ на сайт, "
+          "без tobiz_save_page. Остальные поля формы сохраняются как были.")
+    async def tobiz_update_page(project_id: Id | None = None, page_id: Id = "",
+                                title: str | None = None, dir: str | None = None,
+                                seo_title: str | None = None, seo_description: str | None = None,
+                                seo_keywords: str | None = None, og_image: str | None = None,
+                                valid_login: str | None = None,
+                                valid_password: str | None = None,
+                                personal_seo_configs: bool | None = None,
+                                access_control: bool | None = None) -> dict[str, Any]:
+        project_id, _ = await service.resolve_page(project_id, page_id)
+        return await service.update_page(
+            project_id, page_id, title=title, dir=dir, seo_title=seo_title,
+            seo_description=seo_description, seo_keywords=seo_keywords, og_image=og_image,
+            valid_login=valid_login, valid_password=valid_password,
+            personal_seo_configs=personal_seo_configs, access_control=access_control)
+
+    @tool("tobiz_copy_page",
+          "Скопировать страницу (вместе с блоками) в проект: title — название копии, "
+          "target_project — project_id получателя (по умолчанию текущий). "
+          "apply=false — только показать план и список доступных проектов.")
+    async def tobiz_copy_page(project_id: Id | None = None, page_id: Id = "",
+                              title: str = "", target_project: Id = "",
+                              apply: bool = True) -> dict[str, Any]:
+        project_id, _ = await service.resolve_page(project_id, page_id)
+        return await service.copy_page(project_id, page_id, title or None,
+                                       target_project or None, apply=apply)
+
+    @tool("tobiz_delete_page",
+          "Удалить страницу проекта. Необратимо: требует confirm=true, иначе вернёт отказ "
+          "с названием страницы — сначала проверьте, ту ли удаляете (tobiz_list_pages).")
+    async def tobiz_delete_page(project_id: Id | None = None, page_id: Id = "",
+                                confirm: bool = False) -> dict[str, Any]:
+        project_id, _ = await service.resolve_page(project_id, page_id)
+        return await service.delete_page(project_id, page_id, confirm=confirm)
 
     @tool("tobiz_save_page",
           "Единственный инструмент, который пишет на сервер: рендерит HTML блоков шаблонами "

@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 # Панель: список проектов вместе со списком страниц (HTML в поле html)
+# и правка параметров страницы (название, slug, SEO, доступ по паролю)
 PANEL_AJAX = "/system/ajax.php"
 PANEL_AJAX_ACTION_PROJECTS = "get_projects"
+PANEL_AJAX_ACTION_EDIT_PAGE_FORM = "edit_page_form"
+PANEL_AJAX_ACTION_EDIT_PAGE = "edit_page"
+PANEL_AJAX_ACTION_COPY_PAGE_FORM = "copy_page_to_anp_form"
+PANEL_AJAX_ACTION_COPY_PAGE = "copy_page_to_anp"
+PANEL_AJAX_ACTION_DELETE_PAGE = "delete_page"
 
 # Редактор: всё, что связано со страницей и блоками
 EDITOR_AJAX = "/system/editor/ajax.php"

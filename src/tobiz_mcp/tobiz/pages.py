@@ -136,3 +136,104 @@ def page_or_raise(projects: list[Project], page_id: str) -> tuple[Project, Page]
         f"Страница {page_id} не найдена среди страниц аккаунта",
         "Вызовите tobiz_list_pages и используйте page_id из ответа",
     )
+
+
+# --- форма правки страницы (action=edit_page_form) ---
+#
+# Панель отдаёт готовый HTML формы: параметры страницы (название, slug, SEO, доступ по паролю,
+# картинка для соцсетей). Значения этих полей — источник правды: `window.tobiz` в редакторе
+# может отставать, а edit_page принимает полный набор полей, поэтому его надо отправить целиком.
+
+_TAG_RE = re.compile(r"<(input|textarea)\b([^>]*)>(?:(.*?)</textarea>)?", re.I | re.S)
+_ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*\"([^\"]*)\"", re.S)
+_CHECKED_RE = re.compile(r"(?<![\w-])checked(?![\w-])", re.I)
+_SELECTED_RE = re.compile(r"(?<![\w-])selected(?![\w-])", re.I)
+_SELECT_RE = re.compile(r"<select\b([^>]*)>(.*?)</select>", re.I | re.S)
+_OPTION_RE = re.compile(r"<option\b([^>]*)>(.*?)(?=<option|\Z)", re.I | re.S)
+
+#: поля формы, имеющие смысл для агента (остальные — служебные)
+PAGE_FORM_TEXT_FIELDS = (
+    "page_title", "page_dir", "page_seo_title", "page_seo_keywords",
+    "page_seo_description", "page_valid_login", "page_valid_password", "page_image",
+)
+PAGE_FORM_CHECKBOX_FIELDS = ("page_user_personal_seo_configs", "page_access_control")
+
+
+@dataclass
+class PageForm:
+    """Разобранная форма панели (edit_page, copy_page_to_anp)."""
+
+    text: dict[str, str] = field(default_factory=dict)        # name -> value
+    checked: dict[str, str] = field(default_factory=dict)     # name -> value (чекбокс отмечен)
+    options: dict[str, list[str]] = field(default_factory=dict)  # radio -> варианты
+    selects: dict[str, list[dict[str, str]]] = field(default_factory=dict)  # select -> варианты
+    html: str = ""
+
+    @property
+    def fields(self) -> dict[str, str]:
+        """Полный набор полей для отправки: текст + отмеченные чекбоксы."""
+        return {**self.text, **self.checked}
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            key: self.text.get(key, "") for key in PAGE_FORM_TEXT_FIELDS if key in self.text
+        }
+        for key in PAGE_FORM_CHECKBOX_FIELDS:
+            data[key] = key in self.checked
+        if "page_image" in self.options:
+            data["page_image_options"] = self.options["page_image"]
+        if self.selects:
+            data["selects"] = self.selects
+        return data
+
+
+def _parse_selects(html_body: str, form: PageForm) -> None:
+    """Достаёт <select> с вариантами (в форме копирования так выбирают проект)."""
+    for attrs, body in _SELECT_RE.findall(html_body):
+        attributes = {name.lower(): value for name, value in _ATTR_RE.findall(attrs)}
+        name = attributes.get("name") or attributes.get("id")
+        if not name:
+            continue
+        variants: list[dict[str, str]] = []
+        for option_attrs, option_body in _OPTION_RE.findall(body):
+            option_values = {k.lower(): v for k, v in _ATTR_RE.findall(option_attrs)}
+            title = html.unescape(re.sub(r"<[^>]+>", "", option_body or "")).strip()
+            variants.append({"value": option_values.get("value", ""), "title": title,
+                             "selected": "1" if _SELECTED_RE.search(option_attrs) else "0"})
+        if variants:
+            form.selects[name] = variants
+
+
+def parse_edit_form(html_body: str) -> PageForm:
+    """Разбирает HTML формы панели в структуру. Терпим к порядку атрибутов."""
+    if not html_body or "<form" not in html_body.lower():
+        raise TobizError(
+            PAGES_PARSE_FAILED,
+            "В ответе конструктора нет формы",
+            "Проверьте action=edit_page_form / copy_page_to_anp_form и обновите to biz/pages.py",
+        )
+    form = PageForm(html=html_body)
+    for tag, attrs, content in _TAG_RE.findall(html_body):
+        attributes = {name.lower(): value for name, value in _ATTR_RE.findall(attrs)}
+        name = attributes.get("name")
+        if not name:
+            continue
+        kind = (attributes.get("type") or tag).lower()
+        if tag.lower() == "textarea":
+            form.text[name] = html.unescape(re.sub(r"<[^>]+>", "", content or "")).strip()
+            continue
+        value = attributes.get("value", "")
+        if kind == "checkbox":
+            if _CHECKED_RE.search(attrs):
+                form.checked[name] = value or "1"
+            continue
+        if kind == "radio":
+            form.options.setdefault(name, []).append(value)
+            if _CHECKED_RE.search(attrs):
+                form.text[name] = value
+            continue
+        if kind in ("submit", "button", "reset", "file"):
+            continue
+        form.text[name] = value
+    _parse_selects(html_body, form)
+    return form
