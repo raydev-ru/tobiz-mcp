@@ -96,12 +96,16 @@ docker run -d --name tobiz-mcp --restart unless-stopped -p 8765:8765 \
 Инструменты — половина дела: агенту нужно знать порядок работы, грабли вендора и как проверять
 результат. Это лежит в скиле [`skills/tobiz-mcp/SKILL.md`](skills/tobiz-mcp/SKILL.md).
 
-**Hermes** — поставить скил одной командой (или просто скопировать папку):
+**Hermes** — скил лежит в репозитории, вместе со справочниками (каталог блоков, движок, компоненты,
+эндпоинты). Копируй папку целиком:
 
 ```bash
-hermes skills install https://raw.githubusercontent.com/raydev-ru/tobiz-mcp/main/skills/tobiz-mcp/SKILL.md
-# либо: cp -r skills/tobiz-mcp ~/.hermes/skills/
+git clone https://github.com/raydev-ru/tobiz-mcp.git /tmp/tobiz-mcp
+cp -r /tmp/tobiz-mcp/skills/tobiz-mcp ~/.hermes/skills/
 ```
+
+Установка по прямой ссылке (`hermes skills install <raw-URL на SKILL.md>`) тоже работает, но
+приносит только `SKILL.md` — без справочников и рецептов.
 
 **Codex / OpenCode** читают [`AGENTS.md`](AGENTS.md) из корня репозитория автоматически; если
 работаете не из репозитория — скопируйте файл в свой конфиг (`~/.codex/AGENTS.md` и аналоги).
