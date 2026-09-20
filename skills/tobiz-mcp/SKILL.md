@@ -145,7 +145,11 @@ hermes skills install https://raw.githubusercontent.com/elayadesign/ai-design-sk
 * **Залить лого и подставить**: `upload_image(block_id=<реальный блок>, path=…)` → взять
   `filename` → `update_block`/`update_page(og_image=…)`.
 * **Дублировать страницу**: `copy_page` (`apply=false` — сначала посмотреть план и доступные
-  проекты) → `delete_page(confirm=true)` для уборки лишнего.
+  проекты) → `delete_page(confirm=true)` для уборки лишнего. **Внимание:** у копии новые
+  `block_id`, поэтому анкоры меню и подвала нужно перевязать, а SEO и slug — перепрописать.
+* **Собрать новую посадочную на своей площадке**: `copy_page` под тестовую страницу → переписать
+  тексты в блоках (`update_block`) → `update_page` (slug + SEO) → `save_page` → `verify_page` →
+  замеры в браузере (кнопки, отступы, мобильный вид).
 
 ## Экономия контекста
 
