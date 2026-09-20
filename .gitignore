@@ -1,0 +1,13 @@
+# секреты и локальные данные
+.env
+inbox/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# node
+node_modules/

@@ -1,0 +1,10 @@
+{
+  "name": "tobiz-mcp-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Рендер блоков конструктора TOBIZ шаблонами и хелперами вендора",
+  "main": "bridge.js",
+  "dependencies": {
+    "jsdom": "29.1.1"
+  }
+}
